@@ -5,7 +5,7 @@ license = "MPL-2.0"
 edition = "2018"
 
 [features]
-default = ["webdriver", "max_log_level", "media-gstreamer", "native-bluetooth", "egl", "layout-2013"]
+default = ["webdriver", "max_log_level", "media-gstreamer", "native-bluetooth", "egl", "layout-2020"]
 debugmozjs = ["libservo/debugmozjs"]
 egl = ["libservo/egl"]
 jitspew = ["libservo/jitspew"]
