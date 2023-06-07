@@ -2,18 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! The `servo` test application.
-//!
-//! Creates a `Servo` instance with a simple implementation of
-//! the compositor's `WindowMethods` to create a working web browser.
-//!
-//! This browser's implementation of `WindowMethods` is built on top
-//! of [winit], the cross-platform windowing library.
-//!
-//! For the engine itself look next door in `components/servo/lib.rs`.
-//!
-//! [winit]: https://github.com/rust-windowing/winit
-
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
@@ -40,7 +28,21 @@ use getopts::Options;
 use servo::config::opts::{self, ArgumentParsingResult};
 use servo::servo_config::pref;
 use std::env;
+use std::io::Write;
+use std::panic;
 use std::process;
+use std::thread;
+
+pub mod platform {
+    #[cfg(target_os = "macos")]
+    pub use crate::platform::macos::deinit;
+
+    #[cfg(target_os = "macos")]
+    pub mod macos;
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn deinit(_clean_shutdown: bool) {}
+}
 
 pub fn main() {
     crash_handler::install();
@@ -54,6 +56,11 @@ pub fn main() {
         "",
         "angle",
         "Use ANGLE to create a GL context (Windows-only)",
+    );
+    opts.optflag(
+        "",
+        "clean-shutdown",
+        "Do not shutdown until all threads have finished (macos only)",
     );
     opts.optflag("b", "no-native-titlebar", "Do not use native titlebar");
     opts.optopt("", "device-pixel-ratio", "Device pixels per px", "");
@@ -95,7 +102,40 @@ pub fn main() {
 
     prefs::register_user_prefs(&opts_matches);
 
-    log_panics::init();
+    // TODO: once log-panics is released, can this be replaced by
+    // log_panics::init()?
+    panic::set_hook(Box::new(|info| {
+        warn!("Panic hook called.");
+        let msg = match info.payload().downcast_ref::<&'static str>() {
+            Some(s) => *s,
+            None => match info.payload().downcast_ref::<String>() {
+                Some(s) => &**s,
+                None => "Box<Any>",
+            },
+        };
+        let current_thread = thread::current();
+        let name = current_thread.name().unwrap_or("<unnamed>");
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        if let Some(location) = info.location() {
+            let _ = writeln!(
+                &mut stdout,
+                "{} (thread {}, at {}:{})",
+                msg,
+                name,
+                location.file(),
+                location.line()
+            );
+        } else {
+            let _ = writeln!(&mut stdout, "{} (thread {})", msg, name);
+        }
+        if env::var("RUST_BACKTRACE").is_ok() {
+            let _ = backtrace::print(&mut stdout);
+        }
+        drop(stdout);
+
+        error!("{}", msg);
+    }));
 
     if let Some(token) = content_process_token {
         return servo::run_content_process(token);
@@ -106,6 +146,7 @@ pub fn main() {
         process::exit(0);
     }
 
+    let clean_shutdown = opts_matches.opt_present("clean-shutdown");
     let do_not_use_native_titlebar =
         opts_matches.opt_present("no-native-titlebar") || !(pref!(shell.native_titlebar.enabled));
     let device_pixels_per_px = opts_matches.opt_str("device-pixel-ratio").map(|dppx_str| {
@@ -118,6 +159,8 @@ pub fn main() {
     let user_agent = opts_matches.opt_str("u");
 
     App::run(do_not_use_native_titlebar, device_pixels_per_px, user_agent);
+
+    platform::deinit(clean_shutdown)
 }
 
 pub fn servo_version() -> String {
